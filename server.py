@@ -4,11 +4,37 @@ from pybitget import Client
 import sqlite3
 
 app = FastAPI()
-
+class UserApiKey(BaseModel):
+    userId: int
+    apikey: str
+    apisecret: str
+    apiphrase: str
+    risk: float
+    posCount: int
+    percent: int
+    leverage: int
 class AuthData(BaseModel):
     api_key: str
     secret_key: str
     passphrase: str
+def create_table():
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS UsersApiKey (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId INTEGER,
+        apikey TEXT,
+        apisecret TEXT,
+        apiphrase TEXT,
+        risk REAL,
+        posCount INTEGER,
+        percent INTEGER,
+        leverage INTEGER
+    )
+    ''')
+    conn.commit()
+    conn.close()
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -26,6 +52,7 @@ def init_db():
 
 # Инициализируем базу данных
 init_db()
+create_table()
 @app.post("/get-balance/")
 async def get_balance(auth_data: AuthData):
     try:
@@ -91,7 +118,18 @@ def get_inactive_users():
     conn.close()
     
     return {"inactive_users": inactive_users}
+@app.post("/add_api_key")
+def add_api_key(api_key: UserApiKey):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
 
+    # Вставляем новый API ключ в таблицу UsersApiKey
+    cursor.execute("INSERT INTO UsersApiKey (userId, apikey, apisecret, apiphrase, risk, posCount, percent, leverage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                   (api_key.userId, api_key.apikey, api_key.apisecret, api_key.apiphrase, api_key.risk, api_key.posCount, api_key.percent, api_key.leverage))
+    conn.commit()
+    conn.close()
+    
+    return {"message": "API key added successfully."}
 # Изменение статуса пользователя на active по ID
 @app.put("/users/{user_id}/activate")
 def activate_user(user_id: int):
