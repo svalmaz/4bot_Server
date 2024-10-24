@@ -17,6 +17,15 @@ class AuthData(BaseModel):
     api_key: str
     secret_key: str
     passphrase: str
+
+# Модель для открытия позиций
+class PositionData(BaseModel):
+    symbol: str
+    entry_price: float
+    tp_levels: list[float]
+    tp_percents: list[int]
+    stop_loss_percent: float
+    side: str
 def create_table():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -146,6 +155,103 @@ def activate_user(user_id: int):
     conn.close()
     
     return {"message": f"User with ID {user_id} activated successfully."}
+def calculate_position_size(balance, risk_percent, stop_loss_percent, leverage):
+    risk_amount = balance * (risk_percent / 100)
+    position_size = (risk_amount / stop_loss_percent) * leverage
+    return position_size
+
+# Открытие позиции с API Bitget и частичными тейк-профитами
+def open_position(client, symbol, position_size, entry_price, tp_levels, tp_percents, stop_loss_percent, side):
+    # Основное направление ордера (LONG или SHORT)
+    order_data = {
+        "symbol": symbol,
+        "position_size": position_size,
+        "entry_price": entry_price,
+        "side": side
+    }
+
+    # Открываем основную позицию
+    response = client.place_order(**order_data)
+
+    if response['status'] == 'success':
+        order_id = response['data']['order_id']
+
+        for i, tp_price in enumerate(tp_levels):
+            tp_percent = tp_percents[i]
+            tp_size = position_size * (tp_percent / 100)
+
+            tp_order_data = {
+                "symbol": symbol,
+                "position_size": tp_size,
+                "price": tp_price,
+                "side": "SELL" if side == "LONG" else "BUY",
+                "parent_order_id": order_id
+            }
+
+            client.place_order(**tp_order_data)
+
+        sl_order_data = {
+            "symbol": symbol,
+            "position_size": position_size,
+            "price": stop_loss_percent,
+            "side": "SELL" if side == "LONG" else "BUY",
+            "parent_order_id": order_id
+        }
+
+        client.place_order(**sl_order_data)
+
+    return response
+
+# Основной метод для управления позициями
+@app.post("/open_position/")
+async def manage_positions(auth_data: AuthData, position_data: PositionData):
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+
+        # Получаем данные пользователя
+        cursor.execute("SELECT * FROM UsersApiKey WHERE apikey = ?", (auth_data.api_key,))
+        user = cursor.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User API key not found")
+
+        user_id, api_key, api_secret, api_phrase, risk_percent, pos_count, percent, leverage = user[1:]
+
+        # Инициализируем клиент для API
+        client = Client(api_key, api_secret, api_phrase)
+
+        # Получаем текущий баланс пользователя
+        balance = client.get_balance()['data']['available']
+
+        # Получаем активные позиции пользователя
+        active_positions = client.get_open_positions()
+
+        # Проверяем, если активные позиции меньше, чем posCount
+        if len(active_positions) < pos_count:
+            symbol = position_data.symbol
+            entry_price = position_data.entry_price
+            tp_levels = position_data.tp_levels
+            tp_percents = position_data.tp_percents
+            stop_loss_percent = position_data.stop_loss_percent
+            side = position_data.side
+
+            position_size = calculate_position_size(balance, risk_percent, stop_loss_percent, leverage)
+
+            # Открываем позицию
+            open_position(client, symbol, position_size, entry_price, tp_levels, tp_percents, stop_loss_percent, side)
+
+            return {"message": "Position opened successfully."}
+
+        else:
+            return {"message": "Max active positions reached."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
